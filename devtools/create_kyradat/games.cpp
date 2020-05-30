@@ -112,6 +112,7 @@ const Game eob1Games[] = {
 const Game eob2Games[] = {
 	{ kEoB2, kPlatformDOS, kNoSpecial, EN_ANY },
 	{ kEoB2, kPlatformDOS, kNoSpecial, DE_DEU },
+	{ kEoB2, kPlatformDOS, kNoSpecial, ES_ESP },
 
 	{ kEoB2, kPlatformAmiga, kNoSpecial, EN_ANY },
 	{ kEoB2, kPlatformAmiga, kNoSpecial, DE_DEU },
@@ -2994,7 +2995,7 @@ const int eob2PC98Need[] = {
 	kEoBBaseSoundFilesFinale,
 
 	-1
-}; 
+};
 
 const int eob2FMTownsNeed[] = {
 	kEoBBaseChargenStrings1,
@@ -3559,7 +3560,7 @@ const int eob2FMTownsNeed[] = {
 	kEoB2PcmSoundEffectsFinale,
 
 	-1
-}; 
+};
 
 struct GameNeed {
 	int game;
