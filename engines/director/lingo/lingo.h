@@ -52,6 +52,14 @@ enum LexerDefineState {
 	kStateInArgs
 };
 
+enum VarType {
+	kVarArgument,
+	kVarProperty,
+	kVarInstance,
+	kVarGlobal,
+	kVarLocal
+};
+
 typedef void (*inst)(void);
 #define	STOP (inst)0
 #define ENTITY_INDEX(t,id) ((t) * 100000 + (id))
@@ -68,7 +76,7 @@ struct FuncDesc {
 typedef Common::HashMap<void *, FuncDesc *> FuncHash;
 
 struct Symbol {	/* symbol table entry */
-	Common::String name;
+	Common::String *name;
 	int type;
 	union {
 		int		i;			/* VAR */
@@ -106,8 +114,7 @@ struct Datum {	/* interpreter stack type */
 	union {
 		int	i;				/* INT, ARGC, ARGCNORET */
 		double f;			/* FLOAT */
-		Common::String *s;	/* STRING */
-		Symbol	*sym;
+		Common::String *s;	/* STRING, VAR, OBJECT */
 		DatumArray *farr;	/* ARRAY, POINT, RECT */
 		PropertyArray *parr; /* PARRAY */
 	} u;
@@ -115,7 +122,7 @@ struct Datum {	/* interpreter stack type */
 	int *refCount;
 
 	Datum() {
-		u.sym = NULL;
+		u.s = nullptr;
 		type = VOID;
 		refCount = new int;
 		*refCount = 1;
@@ -158,6 +165,8 @@ struct Datum {	/* interpreter stack type */
 		*refCount -= 1;
 		if (*refCount <= 0) {
 			switch (type) {
+			case VAR:
+				// fallthrough
 			case STRING:
 				delete u.s;
 				break;
@@ -171,8 +180,6 @@ struct Datum {	/* interpreter stack type */
 			case PARRAY:
 				delete u.parr;
 				break;
-			case VAR:
-				// fallthrough
 			case REFERENCE:
 				// fallthrough
 			case INT:
@@ -216,20 +223,20 @@ struct Builtin {
 };
 
 struct ScriptContext {
-	Common::Array<Symbol *> functions;
+	Common::Array<Symbol> functions;
 	Common::Array<Datum> constants;
 };
 
 typedef Common::HashMap<int32, ScriptContext *> ScriptContextHash;
 typedef Common::Array<Datum> StackData;
-typedef Common::HashMap<Common::String, Symbol *, Common::IgnoreCase_Hash, Common::IgnoreCase_EqualTo> SymbolHash;
+typedef Common::HashMap<Common::String, Symbol, Common::IgnoreCase_Hash, Common::IgnoreCase_EqualTo> SymbolHash;
 typedef Common::HashMap<Common::String, Builtin *, Common::IgnoreCase_Hash, Common::IgnoreCase_EqualTo> BuiltinHash;
 
 typedef Common::HashMap<Common::String, TheEntity *, Common::IgnoreCase_Hash, Common::IgnoreCase_EqualTo> TheEntityHash;
 typedef Common::HashMap<Common::String, TheEntityField *, Common::IgnoreCase_Hash, Common::IgnoreCase_EqualTo> TheEntityFieldHash;
 
 struct CFrame {	/* proc/func call stack frame */
-	Symbol	*sp;	/* symbol table entry */
+	Symbol	sp;	/* symbol table entry */
 	int		retpc;	/* where to resume after return */
 	ScriptData	*retscript;	 /* which script to resume after return */
 	ScriptContext	*retctx;   /* which script context to use after return */
@@ -255,7 +262,7 @@ struct LingoEvent {
 struct LingoArchive {
 	ScriptContextHash scriptContexts[kMaxScriptType + 1];
 	Common::Array<Common::String> names;
-	Common::HashMap<uint32, Symbol *> eventHandlers;
+	Common::HashMap<uint32, Symbol> eventHandlers;
 	SymbolHash functionHandlers;
 };
 
@@ -311,7 +318,7 @@ public:
 	ScriptContext *getScriptContext(ScriptType type, uint16 id);
 	Common::String getName(uint16 id);
 	ScriptType event2script(LEvent ev);
-	Symbol *getHandler(Common::String &name);
+	Symbol getHandler(const Common::String &name);
 
 	void processEvent(LEvent event);
 	void processEvents();
@@ -321,14 +328,14 @@ public:
 	void execute(uint pc);
 	void pushContext();
 	void popContext();
-	Symbol *lookupVar(const char *name, bool create = true, bool putInGlobalList = false);
 	void cleanLocalVars();
-	Symbol *define(Common::String &s, int nargs, ScriptData *code);
-	Symbol *define(Common::String &s, int start, int nargs, Common::String *prefix = NULL, int end = -1, bool removeCode = true);
+	Symbol define(Common::String &s, int nargs, ScriptData *code, Common::Array<Common::String> *argNames = nullptr, Common::Array<Common::String> *varNames = nullptr);
+	Symbol codeDefine(Common::String &s, int start, int nargs, Common::String *prefix = NULL, int end = -1, bool removeCode = true);
 	void processIf(int toplabel, int endlabel);
 	int castIdFetch(Datum &var);
-	void varAssign(Datum &var, Datum &value);
-	Datum varFetch(Datum &var);
+	void varCreate(const Common::String &name, bool global);
+	void varAssign(Datum &var, Datum &value, bool global = false);
+	Datum varFetch(Datum &var, bool global = false);
 
 	int getAlignedType(Datum &d1, Datum &d2);
 
@@ -351,7 +358,6 @@ public:
 	}
 
 	void codeArg(Common::String *s);
-	void codeArgStore();
 	int codeSetImmediate(bool state);
 	int codeFunc(Common::String *s, int numpar);
 	int codeMe(Common::String *method, int numpar);
@@ -374,7 +380,7 @@ public:
 	void dropStack(int nargs);
 	void drop(uint num);
 
-	void factoryCall(Common::String &name, int nargs);
+	void factoryCall(const Common::String &name, int nargs);
 
 	void func_mci(const Common::String &name);
 	void func_mciwait(const Common::String &name);
@@ -421,12 +427,13 @@ public:
 	uint16 _currentScriptFunction;
 	ScriptData *_currentScript;
 
-	bool _returning;
+	bool _abort;
 	bool _nextRepeat;
 	LexerDefineState _indef;
 	bool _ignoreMe;
 	bool _immediateMode;
-	Common::HashMap<Common::String, bool, Common::IgnoreCase_Hash, Common::IgnoreCase_EqualTo> _methodVars;
+	Common::HashMap<Common::String, VarType, Common::IgnoreCase_Hash, Common::IgnoreCase_EqualTo> *_methodVars;
+	Common::HashMap<Common::String, VarType, Common::IgnoreCase_Hash, Common::IgnoreCase_EqualTo> *_methodVarsStash;
 
 	Common::Array<CFrame *> _callstack;
 	Common::Array<Common::String *> _argstack;

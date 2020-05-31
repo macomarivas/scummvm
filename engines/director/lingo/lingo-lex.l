@@ -67,7 +67,7 @@ static void count() {
 
 static int checkImmediate(int token) {
 	if (g_lingo->_immediateMode || g_lingo->_indef == kStateInArgs ||
-			g_lingo->_methodVars.contains(yytext)) {
+			g_lingo->_methodVars->contains(yytext)) {
 		yylval.s = new Common::String(yytext);
 
 		return ID;
@@ -93,7 +93,7 @@ static Common::String *cleanupString(const char *s) {
 }
 
 static int varCheck(int token, const char *name) {
-	if (g_lingo->_indef == kStateInArgs || g_lingo->_methodVars.contains(name)) {
+	if (g_lingo->_indef == kStateInArgs || g_lingo->_methodVars->contains(name)) {
 		yylval.s = new Common::String(name);
 
 		return ID;
@@ -364,8 +364,8 @@ the{spc}+[[:alpha:]]+		{
 		}
 
 		if (g_lingo->_builtins.contains(ptr)) {
-			if (g_lingo->_builtins[ptr]->type == FBLTIN &&
-					g_lingo->_builtins[ptr]->nargs == 1 && g_lingo->_builtins[ptr]->maxArgs == 1) {
+			if (g_lingo->_builtins[ptr].type == FBLTIN &&
+					g_lingo->_builtins[ptr].nargs == 1 && g_lingo->_builtins[ptr].maxArgs == 1) {
 				yylval.s = new Common::String(ptr);
 				return THEFBLTIN;
 			}
@@ -400,8 +400,8 @@ word			{ count(); return varCheck(tWORD, "word"); }
 			return ID;
 
 		// Check that this is one of locally used names:
-		// argument, propery, instance or global
-		if (g_lingo->_methodVars.contains(yytext))
+		// argument, property, instance or global
+		if (g_lingo->_methodVars->contains(yytext))
 			return ID;
 
 		// First of all, match against argument list
@@ -410,10 +410,10 @@ word			{ count(); return varCheck(tWORD, "word"); }
 				return ID;
 
 		if (g_lingo->_builtins.contains(yytext)) {
-			int type = g_lingo->_builtins[yytext]->type;
-			if ((type == BLTIN || type == FBLTIN || type == RBLTIN) && g_lingo->_builtins[yytext]->parens == false) {
+			int type = g_lingo->_builtins[yytext].type;
+			if ((type == BLTIN || type == FBLTIN || type == RBLTIN) && g_lingo->_builtins[yytext].parens == false) {
 				if (type == RBLTIN) {
-					if (g_lingo->_builtins[yytext]->nargs != 1 || g_lingo->_builtins[yytext]->maxArgs != 1) {
+					if (g_lingo->_builtins[yytext].nargs != 1 || g_lingo->_builtins[yytext].maxArgs != 1) {
 						warning("Incorrectly set RBLTIN %s", yytext);
 						return LEXERROR;
 					}

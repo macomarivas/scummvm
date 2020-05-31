@@ -55,7 +55,7 @@
 namespace Director {
 
 void Lingo::execute(uint pc) {
-	for (_pc = pc; !_returning && (*_currentScript)[_pc] != STOP && !_nextRepeat;) {
+	for (_pc = pc; !_abort && (*_currentScript)[_pc] != STOP && !_nextRepeat;) {
 		Common::String instr = decodeInstruction(_currentScript, _pc);
 		uint current = _pc;
 
@@ -88,6 +88,8 @@ void Lingo::execute(uint pc) {
 		if (_vm->getCurrentScore() && _vm->getCurrentScore()->_stopPlay)
 			break;
 	}
+
+	_abort = false;
 }
 
 void Lingo::printStack(const char *s, uint pc) {
@@ -108,9 +110,9 @@ void Lingo::printCallStack(uint pc) {
 		if (i < (int)g_lingo->_callstack.size() - 1)
 			framePc = g_lingo->_callstack[i + 1]->retpc;
 
-		if (frame->sp) {
+		if (frame->sp.type != VOID) {
 			debugC(5, kDebugLingoExec, "#%d %s:%d", i + 1,
-				g_lingo->_callstack[i]->sp->name.c_str(),
+				g_lingo->_callstack[i]->sp.name->c_str(),
 				framePc
 			);
 		} else {
@@ -208,124 +210,56 @@ Common::String Lingo::decodeInstruction(ScriptData *sd, uint pc, uint *newPc) {
 	return res;
 }
 
-Symbol *Lingo::lookupVar(const char *name, bool create, bool putInGlobalList) {
-	Symbol *sym = nullptr;
-
-	// Looking for the cast member constants
-	if (_vm->getVersion() < 4) { // TODO: There could be a flag 'Allow Outdated Lingo' in Movie Info in D4
-		int val = castNumToNum(name);
-
-		if (val != -1) {
-			if (!create)
-				error("Cast reference used in wrong context: %s", name);
-
-			sym = new Symbol;
-
-			sym->type = CASTREF;
-			sym->u.i = val;
-
-			return sym;
-		}
-	}
-
-	if (!_localvars || !_localvars->contains(name)) { // Create variable if it was not defined
-		// Check if it is a global symbol
-		if (_globalvars.contains(name))
-			return _globalvars[name];
-
-		if (!create)
-			return NULL;
-
-		sym = new Symbol;
-		sym->name = name;
-		sym->type = VOID;
-		sym->u.i = 0;
-
-		if (!putInGlobalList) {
-			if (_localvars)
-				(*_localvars)[name] = sym;
-
-		} else {
-			sym->global = true;
-			_globalvars[name] = sym;
-		}
-	} else {
-		sym = (*_localvars)[name];
-
-		if (sym->global)
-			sym = _globalvars[name];
-	}
-
-	return sym;
-}
-
 void Lingo::cleanLocalVars() {
 	// Clean up current scope local variables and clean up memory
 	debugC(3, kDebugLingoExec, "cleanLocalVars: have %d vars", _localvars->size());
 
-	for (SymbolHash::const_iterator h = _localvars->begin(); h != _localvars->end(); ++h) {
-		if (!h->_value->global) {
-			delete h->_value;
-		}
-	}
-
+	g_lingo->_localvars->clear();
 	delete g_lingo->_localvars;
 
-	g_lingo->_localvars = 0;
+	g_lingo->_localvars = nullptr;
 }
 
-Symbol *Lingo::define(Common::String &name, int nargs, ScriptData *code) {
-	Symbol *sym = getHandler(name);
-	if (sym == NULL) { // Create variable if it was not defined
-		sym = new Symbol;
-
-		sym->name = name;
-		sym->type = HANDLER;
-
-		if (!_eventHandlerTypeIds.contains(name)) {
-			_archives[_archiveIndex].functionHandlers[name] = sym;
-		} else {
-			_archives[_archiveIndex].eventHandlers[ENTITY_INDEX(_eventHandlerTypeIds[name.c_str()], _currentEntityId)] = sym;
-		}
-	} else {
-		// we don't want to be here. The getHandler call should have used the EntityId and the result
-		// should have been unique!
-		warning("Redefining handler '%s'", name.c_str());
-
-		// Do not attempt to remove code from built-ins
-		sym->reset();
-		sym->refCount = new int;
-		*sym->refCount = 1;
-		sym->type = HANDLER;
-	}
-
-	sym->u.defn = code;
-	sym->nargs = nargs;
-	sym->maxArgs = nargs;
-	// TODO: Assign these properties from here
-	sym->argNames = NULL;
-	sym->varNames = NULL;
-	sym->ctx = NULL;
-	sym->archiveIndex = _archiveIndex;
+Symbol Lingo::define(Common::String &name, int nargs, ScriptData *code, Common::Array<Common::String> *argNames, Common::Array<Common::String> *varNames) {
+	Symbol sym;
+	sym.name = new Common::String(name);
+	sym.type = HANDLER;
+	sym.u.defn = code;
+	sym.nargs = nargs;
+	sym.maxArgs = nargs;
+	sym.argNames = argNames;
+	sym.varNames = varNames;
+	sym.ctx = _currentScriptContext;
+	sym.archiveIndex = _archiveIndex;
 
 	if (debugChannelSet(1, kDebugLingoCompile)) {
 		uint pc = 0;
-		while (pc < sym->u.defn->size()) {
+		while (pc < sym.u.defn->size()) {
 			uint spc = pc;
-			Common::String instr = g_lingo->decodeInstruction(sym->u.defn, pc, &pc);
+			Common::String instr = g_lingo->decodeInstruction(sym.u.defn, pc, &pc);
 			debugC(1, kDebugLingoCompile, "[%5d] %s", spc, instr.c_str());
 		}
 		debugC(1, kDebugLingoCompile, "<end define code>");
 	}
 
+	Symbol existing = getHandler(name);
+	if (existing.type != VOID)
+		warning("Redefining handler '%s'", name.c_str());
+
+	if (!_eventHandlerTypeIds.contains(name)) {
+		_archives[_archiveIndex].functionHandlers[name] = sym;
+	} else {
+		_archives[_archiveIndex].eventHandlers[ENTITY_INDEX(_eventHandlerTypeIds[name.c_str()], _currentEntityId)] = sym;
+	}
+
 	return sym;
 }
 
-Symbol *Lingo::define(Common::String &name, int start, int nargs, Common::String *prefix, int end, bool removeCode) {
+Symbol Lingo::codeDefine(Common::String &name, int start, int nargs, Common::String *prefix, int end, bool removeCode) {
 	if (prefix)
 		name = *prefix + "-" + name;
 
-	debugC(1, kDebugLingoCompile, "define(\"%s\"(len: %d), %d, %d, \"%s\", %d) entity: %d",
+	debugC(1, kDebugLingoCompile, "codeDefine(\"%s\"(len: %d), %d, %d, \"%s\", %d) entity: %d",
 			name.c_str(), _currentScript->size() - 1, start, nargs, (prefix ? prefix->c_str() : ""),
 			end, _currentEntityId);
 
@@ -333,14 +267,22 @@ Symbol *Lingo::define(Common::String &name, int start, int nargs, Common::String
 		end = _currentScript->size();
 
 	ScriptData *code = new ScriptData(&(*_currentScript)[start], end - start);
-	Symbol *sym = define(name, nargs, code);
+	Common::Array<Common::String> *argNames = new Common::Array<Common::String>;
+	for (uint i = 0; i < _argstack.size(); i++) {
+		argNames->push_back(Common::String(_argstack[i]->c_str()));
+	}
+	Common::Array<Common::String> *varNames = new Common::Array<Common::String>;
+	for (Common::HashMap<Common::String, VarType, Common::IgnoreCase_Hash, Common::IgnoreCase_EqualTo>::iterator it = _methodVars->begin(); it != _methodVars->end(); ++it) {
+		if (it->_value == kVarLocal)
+			varNames->push_back(Common::String(it->_key));
+	}
+	Symbol sym = define(name, nargs, code, argNames, varNames);
 
 	// Now remove all defined code from the _currentScript
 	if (removeCode)
 		for (int i = end - 1; i >= start; i--) {
 			_currentScript->remove_at(i);
 		}
-
 
 	return sym;
 }
@@ -404,14 +346,6 @@ void Lingo::clearArgStack() {
 		delete _argstack[i];
 
 	_argstack.clear();
-}
-
-void Lingo::codeArgStore() {
-	for (int i = _argstack.size() - 1; i >= 0; i--) {
-		code1(LC::c_varpush);
-		codeString(_argstack[i]->c_str());
-		code1(LC::c_assign);
-	}
 }
 
 int Lingo::codeSetImmediate(bool state) {
@@ -519,44 +453,73 @@ int Lingo::castIdFetch(Datum &var) {
 	return id;
 }
 
-void Lingo::varAssign(Datum &var, Datum &value) {
+void Lingo::varCreate(const Common::String &name, bool global) {
+	if (_localvars && _localvars->contains(name)) {
+		if (global)
+			warning("varCreate: variable %s is local, not global", name.c_str());
+		return;
+	} else if (_globalvars.contains(name)) {
+		if (!global)
+			warning("varCreate: variable %s is global, not local", name.c_str());
+		return;
+	}
+
+	if (global) {
+		_globalvars[name] = Symbol();
+		_globalvars[name].name = new Common::String(name);
+	} else {
+		(*_localvars)[name] = Symbol();
+		(*_localvars)[name].name = new Common::String(name);
+	}
+}
+
+void Lingo::varAssign(Datum &var, Datum &value, bool global) {
 	if (var.type != VAR && var.type != REFERENCE) {
 		warning("varAssign: assignment to non-variable");
 		return;
 	}
 
 	if (var.type == VAR) {
-		Symbol *sym = var.u.sym;
+		Symbol *sym = nullptr;
+		Common::String name = *var.u.s;
+
+		if (_localvars && _localvars->contains(name)) {
+			sym = &(*_localvars)[name];
+			if (global)
+				warning("varAssign: variable %s is local, not global", name.c_str());
+		} else if (_globalvars.contains(name)) {
+			sym = &_globalvars[name];
+			if (!global)
+				warning("varAssign: variable %s is global, not local", name.c_str());
+		}
+
 		if (!sym) {
-			warning("varAssign: symbol not defined");
+			warning("varAssign: variable %s not defined", name.c_str());
 			return;
 		}
 
 		if (sym->type != INT && sym->type != VOID &&
 				sym->type != FLOAT && sym->type != STRING &&
 				sym->type != ARRAY && sym->type != PARRAY) {
-			warning("varAssign: assignment to non-variable '%s'", sym->name.c_str());
+			warning("varAssign: assignment to non-variable '%s'", sym->name->c_str());
 			return;
 		}
 
 		sym->reset();
 		sym->refCount = value.refCount;
 		*sym->refCount += 1;
+		sym->name = new Common::String(name);
 		sym->type = value.type;
 		if (value.type == INT) {
 			sym->u.i = value.u.i;
 		} else if (value.type == FLOAT) {
 			sym->u.f = value.u.f;
-		} else if (value.type == STRING) {
+		} else if (value.type == STRING || value.type == SYMBOL || value.type == OBJECT) {
 			sym->u.s = value.u.s;
 		} else if (value.type == POINT || value.type == ARRAY) {
 			sym->u.farr = value.u.farr;
 		} else if (value.type == PARRAY) {
 			sym->u.parr = value.u.parr;
-		} else if (value.type == SYMBOL) {
-			sym->u.s = value.u.s;
-		} else if (value.type == OBJECT) {
-			sym->u.s = value.u.s;
 		} else if (value.type == VOID) {
 			sym->u.i = 0;
 		} else {
@@ -586,7 +549,7 @@ void Lingo::varAssign(Datum &var, Datum &value) {
 	}
 }
 
-Datum Lingo::varFetch(Datum &var) {
+Datum Lingo::varFetch(Datum &var, bool global) {
 	Datum result;
 	result.type = VOID;
 	if (var.type != VAR && var.type != REFERENCE) {
@@ -595,9 +558,21 @@ Datum Lingo::varFetch(Datum &var) {
 	}
 
 	if (var.type == VAR) {
-		Symbol *sym = var.u.sym;
+		Symbol *sym = nullptr;
+		Common::String name = *var.u.s;
+
+		if (_localvars && _localvars->contains(name)) {
+			sym = &(*_localvars)[name];
+			if (global)
+				warning("varFetch: variable %s is local, not global", sym->name->c_str());
+		} else if (_globalvars.contains(name)) {
+			sym = &_globalvars[name];
+			if (!global)
+				warning("varFetch: variable %s is global, not local", sym->name->c_str());
+		}
+
 		if (!sym) {
-			warning("varFetch: symbol not defined");
+			warning("varFetch: variable %s not found", name.c_str());
 			return result;
 		}
 
@@ -610,18 +585,14 @@ Datum Lingo::varFetch(Datum &var) {
 			result.u.i = sym->u.i;
 		else if (sym->type == FLOAT)
 			result.u.f = sym->u.f;
-		else if (sym->type == STRING)
+		else if (sym->type == STRING || sym->type == SYMBOL || sym->type == OBJECT)
 			result.u.s = sym->u.s;
-		else if (sym->type == POINT)
-			result.u.farr = sym->u.farr;
-		else if (sym->type == SYMBOL)
-			result.u.s = var.u.sym->u.s;
-		else if (sym->type == VOID)
-			result.u.i = 0;
-		else if (sym->type == ARRAY)
+		else if (sym->type == POINT || sym->type == ARRAY)
 			result.u.farr = sym->u.farr;
 		else if (sym->type == PARRAY)
 			result.u.parr = sym->u.parr;
+		else if (sym->type == VOID)
+			result.u.i = 0;
 		else {
 			warning("varFetch: unhandled type: %s", var.type2str());
 			result.type = VOID;
@@ -651,14 +622,14 @@ Datum Lingo::varFetch(Datum &var) {
 void Lingo::codeFactory(Common::String &name) {
 	_currentFactory = name;
 
-	Symbol *sym = new Symbol;
+	Symbol sym;
 
-	sym->name = name;
-	sym->type = BLTIN;
-	sym->nargs = -1;
-	sym->maxArgs = 0;
-	sym->parens = true;
-	sym->u.bltin = LB::b_factory;
+	sym.name = new Common::String(name);
+	sym.type = BLTIN;
+	sym.nargs = -1;
+	sym.maxArgs = 0;
+	sym.parens = true;
+	sym.u.bltin = LB::b_factory;
 
 	_archives[_archiveIndex].eventHandlers[ENTITY_INDEX(_eventHandlerTypeIds[name.c_str()], _currentEntityId)] = sym;
 }
